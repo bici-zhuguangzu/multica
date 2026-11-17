@@ -1,0 +1,103 @@
+name: Build Multica iOS IPA (SideStore)
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'HTTPS URL of your existing Multica API (no trailing slash)'
+        required: true
+        type: string
+      web_url:
+        description: 'Optional HTTPS URL of your Multica web frontend'
+        required: false
+        type: string
+      bundle_id:
+        description: 'App bundle identifier for your sideloaded copy'
+        required: false
+        default: 'com.personal.multica'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile unsigned iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      APP_ENV: production
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+      EXPO_PUBLIC_API_URL: ${{ inputs.api_url }}
+      EXPO_PUBLIC_WEB_URL: ${{ inputs.web_url }}
+      EXPO_BUNDLE_IDENTIFIER_PROD: ${{ inputs.bundle_id }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.28.2 --activate
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify backend URL
+        shell: bash
+        run: |
+          [[ "$EXPO_PUBLIC_API_URL" == https://* ]] || { echo 'API URL must begin with https://'; exit 1; }
+          echo "API: $EXPO_PUBLIC_API_URL"
+
+      - name: Generate native iOS project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods dependencies
+        working-directory: apps/mobile/ios
+        run: pod install --repo-update
+
+      - name: Build unsigned Release app
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace=$(find apps/mobile/ios -maxdepth 1 -name '*.xcworkspace' -type d | head -n 1)
+          [[ -n "$workspace" ]] || { echo 'No Xcode workspace generated'; exit 1; }
+          scheme=$(basename "$workspace" .xcworkspace)
+          echo "Workspace: $workspace | Scheme: $scheme"
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/multica-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find "$RUNNER_TEMP/multica-derived/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -type d | head -n 1)
+          [[ -n "$app" ]] || { echo 'No .app found'; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$app" "$RUNNER_TEMP/ipa/Payload/$(basename "$app")"
+          cd "$RUNNER_TEMP/ipa"
+          zip -qry "$GITHUB_WORKSPACE/Multica-unsigned-SideStore.ipa" Payload
+          ls -lh "$GITHUB_WORKSPACE/Multica-unsigned-SideStore.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Multica-unsigned-SideStore
+          path: Multica-unsigned-SideStore.ipa
+          retention-days: 7
+          if-no-files-found: error
