@@ -6,6 +6,7 @@ on:
       api_url:
         description: 'HTTPS URL of your existing Multica API (no trailing slash)'
         required: true
+        default: 'https://multica.guangzu.online:8443'
         type: string
       web_url:
         description: 'Optional HTTPS URL of your Multica web frontend'
